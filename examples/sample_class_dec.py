@@ -1,13 +1,11 @@
 from Sparkit import Node, Input, Output, Run, MainOut, Out, sparkit
 import requests
 
-@Node
 @Input(name="host", required=True, type=str)
 @Input(name="protocol", required=True, type=str)
-@Input(name="_response", required=False, type=str)
-@Input(name="_error", required=False, type=str)
 @Output(name="status_code", type=int)
 @Output(name="content_type", type=str)
+@Node
 class StatusReporter:
     host: str
     protocol: str = "https"
