@@ -33,7 +33,7 @@ jobs:
         # Only publish when this run was triggered by a tag push (refs/tags/v...)
         if: startsWith(github.ref, 'refs/tags/')
         env:
-          TWINE_USERNAME: __token__
+          TWINE_USERNAME: KelwSagashi
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           python -m pip install --upgrade twine
