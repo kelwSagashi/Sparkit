@@ -33,14 +33,14 @@ class StatusReporter:
         return {"host": self.host, "status": "unknown"}
 
     @Out("status_code")
-    def get_status_code(self) -> int:
+    def get_status_code(self):
         return self._response.status_code if self._response else -1
         
     @Out("content_type")
-    def get_content_type(self) -> str | None:
+    def get_content_type(self):
         if self._response:
-            return self._response.headers.get('Content-Type')
-        return None
+            return { "content_type": self._response.headers.get('Content-Type') }
+        return { "content_type": None }
 
 
 if __name__ == "__main__":

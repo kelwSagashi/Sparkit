@@ -22,6 +22,8 @@ import sys, json, inspect, traceback, io
 from contextlib import redirect_stdout, redirect_stderr
 
 from typing import get_type_hints, get_origin, get_args, Any, Dict, List, Union, Optional
+import ast
+import textwrap
 
 
 # | 'trigger'
@@ -797,6 +799,88 @@ class SparkitRuntime:
         if cli_inputs:
             return cli_inputs
 
+    def _infer_fields_from_callable(self, fn: callable) -> List[Dict[str, Any]]:
+        """
+        Best-effort static analysis of a function/method to find Return statements
+        that return dict literals and extract their keys and a simple inferred type.
+        Returns a list of field descriptors: {name, type, nullable?}
+        """
+        fields: Dict[str, Dict[str, Any]] = {}
+        try:
+            src = inspect.getsource(fn)
+        except (OSError, TypeError):
+            return []
+
+        # dedent source (methods inside classes are indented) so ast.parse can handle it
+        try:
+            src = textwrap.dedent(src)
+        except Exception:
+            pass
+
+        try:
+            tree = ast.parse(src)
+        except Exception:
+            return []
+
+        def infer_type(node: ast.AST) -> tuple[str, bool]:
+            # returns (type_name, nullable)
+            if isinstance(node, ast.Constant):
+                val = node.value
+                if val is None:
+                    return ("unknown", True)
+                if isinstance(val, bool):
+                    return ("boolean", False)
+                if isinstance(val, (int, float)):
+                    return ("number", False)
+                if isinstance(val, str):
+                    return ("string", False)
+                return ("unknown", False)
+            if isinstance(node, (ast.Num,)):
+                return ("number", False)
+            if isinstance(node, (ast.Str,)):
+                return ("string", False)
+            if isinstance(node, ast.NameConstant):
+                if node.value is None:
+                    return ("unknown", True)
+            # Calls/Attributes/Names/etc: unknown (but often string)
+            return ("unknown", False)
+
+        class ReturnVisitor(ast.NodeVisitor):
+            def visit_Return(self, node: ast.Return):
+                val = node.value
+                if isinstance(val, ast.Dict):
+                    keys = val.keys
+                    values = val.values
+                    for k, v in zip(keys, values):
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                            key = k.value
+                        elif isinstance(k, ast.Str):
+                            key = k.s
+                        else:
+                            continue
+                        tname, nullable = infer_type(v)
+                        prev = fields.get(key)
+                        if prev is None:
+                            fields[key] = {"type": tname, "nullable": nullable}
+                        else:
+                            # merge: if types differ, fallback to unknown; keep nullable if any True
+                            if prev["type"] != tname:
+                                prev["type"] = "unknown"
+                            prev["nullable"] = prev.get("nullable", False) or nullable
+
+        try:
+            ReturnVisitor().visit(tree)
+        except Exception:
+            return []
+
+        out = []
+        for k, v in fields.items():
+            fd = {"name": k, "type": v.get("type", "unknown")}
+            if v.get("nullable"):
+                fd["nullable"] = True
+            out.append(fd)
+        return out
+
 
         if sys.stdin.isatty():
 
@@ -836,12 +920,12 @@ class SparkitRuntime:
                 continue
 
 
+            t = d.get("type", Any)
             entry: Dict[str, Any] = {
                 "name": name,
-
-                "type": type_to_str(d.get("type", Any)),
-
+                "type": type_to_str(t),
             }
+            
 
 
             # Descrição opcional
@@ -859,6 +943,31 @@ class SparkitRuntime:
 
                 entry["nullable"] = True
 
+            # If the output definition already included inferred 'fields' (from static analysis),
+            # copy them into the schema entry and mark the type as object.
+            if d.get("fields"):
+                try:
+                    entry["fields"] = d.get("fields")
+                    entry["type"] = "object"
+                except Exception:
+                    pass
+
+            # If the declared type is a TypedDict-like class or a class with __annotations__,
+            # try to expose field-level info in the schema.
+            try:
+                # handle typing.TypedDict or simple Pydantic-style dict-like annotations
+                if isinstance(t, type) and hasattr(t, '__annotations__') and t is not dict:
+                    fields = []
+                    for fname, ftype in get_type_hints(t, include_extras=True).items():
+                        fields.append({"name": fname, "type": type_to_str(ftype)})
+                    if fields:
+                        entry["fields"] = fields
+            except Exception:
+                pass
+
+            # If we inferred structure fields for this output, present it as an object
+            if entry.get("fields"):
+                entry["type"] = "object"
 
             result.append(entry)
 
@@ -878,6 +987,15 @@ class SparkitRuntime:
         combined_outputs = self.outputs.definitions.copy()
 
         combined_outputs.update(meta.get("outputs", {}))
+
+        # If function has a return annotation, prefer it for stdout type
+        try:
+            if inspect.isfunction(fn) and hasattr(fn, "__annotations__"):
+                ret_ann = fn.__annotations__.get('return', None)
+                if ret_ann is not None and 'stdout' not in combined_outputs:
+                    combined_outputs['stdout'] = {'name': 'stdout', 'type': ret_ann}
+        except Exception:
+            pass
 
 
         return {"inputs": combined_inputs, "outputs": combined_outputs}
@@ -1010,11 +1128,49 @@ class SparkitRuntime:
                     fields.append(entry)
 
 
+
         # Combina outputs de todas as fontes
 
         combined_outputs = self.outputs.definitions.copy()
 
         combined_outputs.update(meta.get("outputs", {}))
+
+        # If class defines @MainOut or @Out methods, try to infer return types from annotations
+        try:
+            for name, member in inspect.getmembers(clazz, predicate=inspect.isfunction):
+                # instance methods will have annotations on the function object
+                if hasattr(member, '__sparkit_is_main_out__'):
+                    ann = get_type_hints(member).get('return', None)
+                    if ann is not None:
+                        combined_outputs.setdefault('stdout', {})['type'] = ann
+
+                    # Static analysis: if the method returns dict literals, infer fields
+                    try:
+                        fields = self._infer_fields_from_callable(member)
+                        if fields:
+                            co = combined_outputs.setdefault('stdout', {})
+                            co['type'] = dict
+                            co['fields'] = fields
+                    except Exception:
+                        pass
+
+                if hasattr(member, '__sparkit_output_name__'):
+                    out_name = getattr(member, '__sparkit_output_name__')
+                    ann = get_type_hints(member).get('return', None)
+                    if ann is not None:
+                        combined_outputs.setdefault(out_name, {})['type'] = ann
+                    # Static analysis for @Out methods: extract dict literal return shapes
+                    try:
+                        fields = self._infer_fields_from_callable(member)
+                        if fields:
+                            co = combined_outputs.setdefault(out_name, {})
+                            co['type'] = dict
+                            co['fields'] = fields
+                    except Exception:
+                        pass
+        except Exception:
+            # best-effort: ignore annotation parsing errors
+            pass
 
 
         class_outputs_def = getattr(clazz, "outputs_def", {})
