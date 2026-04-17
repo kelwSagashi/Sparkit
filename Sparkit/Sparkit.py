@@ -155,66 +155,45 @@ class OutputRegistry:
 
         self.data: Dict[str, Any] = {}
 
-        self.definitions: Dict[str, Dict[str, Any]] = {
+        # Build inputs map from class annotations and @Input decorators (meta).
+        try:
+            hints = get_type_hints(clazz, include_extras=True)
+        except Exception:
+            hints = {}
 
-            'stdout': {'name': 'stdout', 'type': Any, 'description': None},
+        class_defaults = {k: v for k, v in clazz.__dict__.items() if not k.startswith("_") and not callable(v)}
 
-            'stderr': {'name': 'stderr', 'type': Dict[str, str], 'description': None},
+        inputs_map: Dict[str, Dict[str, Any]] = {}
 
-        }
+        # Start from annotated attributes
+        for name, typ in hints.items():
+            if name in ("outputs", "outputs_def"):
+                continue
+            required = name not in class_defaults
+            inputs_map[name] = {"name": name, "type": type_to_str(typ), "required": required}
 
+        # Merge in meta inputs (decorator-based); decorators override defaults
+        for k, v in meta.get("inputs", {}).items():
+            typ = v.get("type", None)
+            entry_type = type_to_str(typ) if typ is not None else inputs_map.get(k, {}).get("type", "string")
+            inputs_map[k] = {"name": k, "type": entry_type, "required": v.get("required", False)}
+            if v.get("description"):
+                inputs_map[k]["description"] = v.get("description")
 
-    def add(self, name: str, type_: Any = Any, description: str = None):
+        # Order: annotated attrs first (preserve hints order), then extras from meta
+        fields: List[Dict[str, Any]] = []
+        seen = set()
+        for name in hints.keys():
+            if name in inputs_map:
+                fields.append(inputs_map[name])
+                seen.add(name)
+        for k, entry in inputs_map.items():
+            if k not in seen:
+                fields.append(entry)
 
-        """Define uma saída com nome, tipo e descrição opcional."""
-
-        self.definitions[name] = {"name": name, "type": type_, "description": description}
-
-
-    def set_data(self, name: str, data: Any):
-        if name not in self.definitions:
-
-            raise ValueError(
-
-                f"Output '{name}' not declared. Use @Output('{name}') or "
-
-                f"sparkit.outputs.add('{name}') before setting."
-            )
-
-        self.data[name] = data
-
-
-    def add_data(self, name: str, data: Any):
-        self.set_data(name, data)
-
-
-
-class InputRegistry:
-    def __init__(self):
-
-        self.fields: Dict[str, Dict[str, Any]] = {}
-
-
-    def add(self, name: str, required: bool = False, type_: Any = str, description: str = None):
-
-        self.fields[name] = {"name": name, "required": required, "type": type_, "description": description}
-
-    def clear(self):
-        self.fields.clear()
-
-
-
-def ensure_meta(obj):
-
-    if not hasattr(obj, "__sparkit_meta__"):
-
-        obj.__sparkit_meta__ = {"inputs": {}, "outputs": {}, "run_method": None}
-
-    return obj.__sparkit_meta__
-
-
-
-# ---------- decorators ----------
+        # Combina outputs de todas as fontes
+        combined_outputs = self.outputs.definitions.copy()
+        combined_outputs.update(meta.get("outputs", {}))
 
 
 def Input(name: str = None, required: bool = False, type: Any = Any, description: str = None):

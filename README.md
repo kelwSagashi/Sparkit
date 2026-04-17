@@ -1,13 +1,12 @@
 # 📦 sparkit Runtime SDK
 
-
 Um runtime leve para execução de scripts Python sparkit com:
 
-* 🧠 Geração automática de schema
-* 🖥️ CLI profissional (flags, help, validação)
-* 🔄 Compatível com stdin/stdout (modo pipeline)
-* ⚡ Execução de funções ou classes
-* Uso de @Input / @Output / @Run decoradores
+- 🧠 Geração automática de schema
+- 🖥️ CLI profissional (flags, help, validação)
+- 🔄 Compatível com stdin/stdout (modo pipeline)
+- ⚡ Execução de funções ou classes
+- Uso de @Input / @Output / @Run decoradores
 
 ---
 
@@ -34,7 +33,7 @@ class SampleMonitor(NodeBase):
     device_id: str | None = None
 
     outputs_def = {
-        'meta': {'type': dict[str, str]}, 
+        'meta': {'type': dict[str, str]},
         'main': {'type': dict[str, int]}
     }
 
@@ -145,12 +144,10 @@ Saída:
 ```json
 {
   "schema": {
-    "inputs": [
-      {"name": "ip", "type": "string", "required": true}
-    ],
+    "inputs": [{ "name": "ip", "type": "string", "required": true }],
     "outputs": [
-      {"name": "status", "type": "string"},
-      {"name": "ip", "type": "string"}
+      { "name": "status", "type": "string" },
+      { "name": "ip", "type": "string" }
     ]
   }
 }
@@ -214,37 +211,36 @@ Ou em caso de erro:
 
 Esse runtime foi projetado para funcionar diretamente em pipelines:
 
-* Recebe JSON via stdin
-* Retorna JSON estruturado
-* Possui schema introspectivo
+- Recebe JSON via stdin
+- Retorna JSON estruturado
+- Possui schema introspectivo
 
 👉 Ideal para:
 
-* automações
-* workflows
-* agentes
-* execução remota
+- automações
+- workflows
+- agentes
+- execução remota
 
 ---
 
 # 🏗️ Arquitetura
 
-* `sparkitRuntime`
-
-  * parsing CLI
-  * leitura de inputs
-  * execução
-  * geração de schema
-  * tratamento de erro
+- `sparkitRuntime`
+  - parsing CLI
+  - leitura de inputs
+  - execução
+  - geração de schema
+  - tratamento de erro
 
 ---
 
 # 🔒 Validações
 
-* Campos obrigatórios (`required`)
-* Tipagem automática
-* Erros estruturados
-* Argumentos desconhecidos são rejeitados
+- Campos obrigatórios (`required`)
+- Tipagem automática
+- Erros estruturados
+- Argumentos desconhecidos são rejeitados
 
 ---
 
@@ -260,11 +256,11 @@ Esse SDK segue 3 princípios:
 
 # 🚀 Roadmap
 
-* [ ] Autocomplete (bash/zsh)
-* [ ] Logs coloridos
-* [ ] Plugins
-* [ ] Execução assíncrona
-* [ ] Cache de execução
+- [ ] Autocomplete (bash/zsh)
+- [ ] Logs coloridos
+- [ ] Plugins
+- [ ] Execução assíncrona
+- [ ] Cache de execução
 
 ---
 
@@ -277,3 +273,28 @@ Pull requests são bem-vindos!
 # 📄 Licença
 
 MIT
+
+---
+
+## Examples
+
+Os exemplos estão em `examples/` e demonstram tanto o estilo baseado em classe (com decoradores) quanto o estilo procedural.
+
+- `examples/sample_class_dec.py` — Exemplo OO com `@Input`, `@Output`, `@Run`, `@MainOut`, `@Out`.
+- `examples/sample_class.py` — Exemplo OO simples.
+- `examples/sample_imp.py` — Exemplo procedural com funções.
+
+Instalação das dependências dos exemplos:
+
+```bash
+pip install -r examples/requirements.txt
+```
+
+## O que temos agora (novidades)
+
+- Geração de schema para funções e classes.
+- Inferência estática de campos retornados por dicionários (mostra `fields` em `stdout` e saídas customizadas quando detectado).
+- Suporte total para decoradores `@Input` aplicado em classes e métodos `@Out`/`@MainOut`.
+- CLI: `--schema`, `--help`, `--input`, `--input-file`.
+
+Versão atual do pacote: `0.1.2`.
