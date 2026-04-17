@@ -31,7 +31,7 @@ jobs:
 
       - name: Publish to PyPI
         # Only publish when this run was triggered by a tag push (refs/tags/v...)
-        if: startsWith(github.ref, 'refs/tags/')
+        # if: startsWith(github.ref, 'refs/tags/')
         env:
           TWINE_USERNAME: KelwSagashi
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
