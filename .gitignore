@@ -34,3 +34,4 @@ htmlcov/
 
 # VS Code
 .vscode/
+.env
