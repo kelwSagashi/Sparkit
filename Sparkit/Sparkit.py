@@ -152,48 +152,43 @@ _STDERR_SCHEMA = {
 
 class OutputRegistry:
     def __init__(self):
-
         self.data: Dict[str, Any] = {}
+        self.definitions: Dict[str, Dict[str, Any]] = {
+            'stdout': {'name': 'stdout', 'type': Any, 'description': None},
+            'stderr': {'name': 'stderr', 'type': Dict[str, str], 'description': None},
+        }
 
-        # Build inputs map from class annotations and @Input decorators (meta).
-        try:
-            hints = get_type_hints(clazz, include_extras=True)
-        except Exception:
-            hints = {}
+    def add(self, name: str, type_: Any = Any, description: str = None):
+        """Define uma saída com nome, tipo e descrição opcional."""
+        self.definitions[name] = {"name": name, "type": type_, "description": description}
 
-        class_defaults = {k: v for k, v in clazz.__dict__.items() if not k.startswith("_") and not callable(v)}
+    def set_data(self, name: str, data: Any):
+        if name not in self.definitions:
+            raise ValueError(
+                f"Output '{name}' not declared. Use @Output('{name}') or "
+                f"sparkit.outputs.add('{name}') before setting."
+            )
+        self.data[name] = data
 
-        inputs_map: Dict[str, Dict[str, Any]] = {}
+    def add_data(self, name: str, data: Any):
+        self.set_data(name, data)
 
-        # Start from annotated attributes
-        for name, typ in hints.items():
-            if name in ("outputs", "outputs_def"):
-                continue
-            required = name not in class_defaults
-            inputs_map[name] = {"name": name, "type": type_to_str(typ), "required": required}
 
-        # Merge in meta inputs (decorator-based); decorators override defaults
-        for k, v in meta.get("inputs", {}).items():
-            typ = v.get("type", None)
-            entry_type = type_to_str(typ) if typ is not None else inputs_map.get(k, {}).get("type", "string")
-            inputs_map[k] = {"name": k, "type": entry_type, "required": v.get("required", False)}
-            if v.get("description"):
-                inputs_map[k]["description"] = v.get("description")
+class InputRegistry:
+    def __init__(self):
+        self.fields: Dict[str, Dict[str, Any]] = {}
 
-        # Order: annotated attrs first (preserve hints order), then extras from meta
-        fields: List[Dict[str, Any]] = []
-        seen = set()
-        for name in hints.keys():
-            if name in inputs_map:
-                fields.append(inputs_map[name])
-                seen.add(name)
-        for k, entry in inputs_map.items():
-            if k not in seen:
-                fields.append(entry)
+    def add(self, name: str, required: bool = False, type_: Any = str, description: str = None):
+        self.fields[name] = {"name": name, "required": required, "type": type_, "description": description}
 
-        # Combina outputs de todas as fontes
-        combined_outputs = self.outputs.definitions.copy()
-        combined_outputs.update(meta.get("outputs", {}))
+    def clear(self):
+        self.fields.clear()
+
+
+def ensure_meta(obj):
+    if not hasattr(obj, "__sparkit_meta__"):
+        obj.__sparkit_meta__ = {"inputs": {}, "outputs": {}, "run_method": None}
+    return obj.__sparkit_meta__
 
 
 def Input(name: str = None, required: bool = False, type: Any = Any, description: str = None):
@@ -1049,69 +1044,47 @@ class SparkitRuntime:
 
 
     def _schema_for_class(self, clazz):
-
         meta = ensure_meta(clazz)
 
+        try:
+            hints = get_type_hints(clazz, include_extras=True)
+        except Exception:
+            hints = {}
 
-        hints = get_type_hints(clazz, include_extras=True)
+        class_defaults = {k: v for k, v in clazz.__dict__.items() if not k.startswith("_") and not callable(v)}
 
-        fields = []
-
-        class_defaults = {k: v for k, v in clazz.__dict__.items() if not k.startswith("_")}
-
-
+        # build inputs map from annotations
+        inputs_map: Dict[str, Dict[str, Any]] = {}
         for name, typ in hints.items():
             if name in ("outputs", "outputs_def"):
                 continue
-
             required = name not in class_defaults
+            inputs_map[name] = {"name": name, "type": type_to_str(typ), "required": required}
 
-            input_meta = {}
+        # merge meta inputs (decorator-based), overriding when present
+        for k, v in meta.get("inputs", {}).items():
+            typ = v.get("type", None)
+            entry_type = type_to_str(typ) if typ is not None else inputs_map.get(k, {}).get("type", "string")
+            inputs_map[k] = {"name": k, "type": entry_type, "required": v.get("required", False)}
+            if v.get("description"):
+                inputs_map[k]["description"] = v.get("description")
 
-            if "inputs" in meta and name in meta["inputs"]:
-
-                input_meta = meta["inputs"][name]
-
-                required = input_meta.get("required", required)
-
-                typ = input_meta.get("type", typ)
-
-            entry = {"name": name, "type": type_to_str(typ), "required": required}
-
-            if input_meta.get("description"):
-
-                entry["description"] = input_meta["description"]
-
-            fields.append(entry)
-
-        if "inputs" in meta:
-
-            for k, v in meta["inputs"].items():
-
-                if k not in [f["name"] for f in fields]:
-
-                    entry = {
-
-                        "name": k,
-
-                        "type": type_to_str(v.get("type", str)),
-
-                        "required": v.get("required", False),
-
-                    }
-
-                    if v.get("description"):
-
-                        entry["description"] = v["description"]
-
-                    fields.append(entry)
-
-
+        # produce ordered fields: annotated first, then extras
+        input_fields: List[Dict[str, Any]] = []
+        seen = set()
+        for name in hints.keys():
+            if name in inputs_map:
+                # skip private attrs
+                if name.startswith("_"):
+                    continue
+                input_fields.append(inputs_map[name])
+                seen.add(name)
+        for k, entry in inputs_map.items():
+            if k not in seen and not k.startswith("_"):
+                input_fields.append(entry)
 
         # Combina outputs de todas as fontes
-
         combined_outputs = self.outputs.definitions.copy()
-
         combined_outputs.update(meta.get("outputs", {}))
 
         # If class defines @MainOut or @Out methods, try to infer return types from annotations
@@ -1178,7 +1151,7 @@ class SparkitRuntime:
 
         output_schema = self._format_outputs_for_schema(combined_outputs)
 
-        return {"inputs": fields, "outputs": output_schema}
+        return {"inputs": input_fields, "outputs": output_schema}
 
     def _run_function(self, fn):
 
