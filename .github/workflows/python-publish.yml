@@ -7,7 +7,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch: {}
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install build tools
         run: |
@@ -29,13 +29,28 @@ jobs:
       - name: Build distributions
         run: python -m build
 
+      - name: Debug context
+        # Always run this step to capture event context for debugging
+        run: |
+          echo "--- Debug: GitHub Actions context ---"
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_REF_TYPE=${GITHUB_REF##*/}"
+          if [ -n "$GITHUB_EVENT_PATH" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+            echo "--- event payload ---"
+            cat "$GITHUB_EVENT_PATH" || true
+          else
+            echo "No GITHUB_EVENT_PATH available"
+          fi
+
       - name: Publish to PyPI
         # Only publish when this run was triggered by a tag push (refs/tags/v...)
         if: startsWith(github.ref, 'refs/tags/')
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-          TWINE_NON_INTERACTIVE: '1'
+          TWINE_NON_INTERACTIVE: "1"
         run: |
           python -m pip install --upgrade twine
           # Use verbose + non-interactive to show full server response on failures
