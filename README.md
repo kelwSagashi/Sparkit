@@ -2,7 +2,7 @@
 
 O sparkit é uma biblioteca feita com o objetivo de ser um facilitador CLI para permitir que aplicações diversas possam interagir com código python sem precisar rodar, de fato, para saber quais as suas entradas e saídas, além de facilitar a insersão de dados e otimizar a forma como se escreve código, usando a saída padrão como forma de comunicação entre aplicativos diferentes para que outras possam capturar a saída e usar da forma como quiser.
 
-# Intuito
+# Propósito
 
 Um runtime leve para execução de scripts Python com:
 
