@@ -1,8 +1,12 @@
-# 📦 sparkit Runtime SDK
+# 📦 sparkit
 
-Um runtime leve para execução de scripts Python sparkit com:
+O sparkit é uma biblioteca feita com o objetivo de ser um facilitador CLI para permitir que aplicações diversas possam interagir com código python sem precisar rodar, de fato, para saber quais as suas entradas e saídas, além de facilitar a insersão de dados e otimizar a forma como se escreve código, usando a saída padrão como forma de comunicação entre aplicativos diferentes para que outras possam capturar a saída e usar da forma como quiser.
 
-- 🧠 Geração automática de schema
+# Intuito
+
+Um runtime leve para execução de scripts Python com:
+
+- 🧠 Geração automática de esquemas de entrada e saída
 - 🖥️ CLI profissional (flags, help, validação)
 - 🔄 Compatível com stdin/stdout (modo pipeline)
 - ⚡ Execução de funções ou classes
@@ -17,7 +21,10 @@ git clone https://github.com/kelwp/sparkit
 cd sparkit
 ```
 
-Ou apenas copie a pasta `sparkit` para a raiz do seu projeto.
+Ou instale pelo pip
+```bash
+pip install sparkit
+```
 
 ---
 
@@ -26,7 +33,7 @@ Ou apenas copie a pasta `sparkit` para a raiz do seu projeto.
 ## 🔹 Exemplo com classe
 
 ```python
-from sparkitSDK import sparkit
+from Sparkit import sparkit, NodeBase
 
 class SampleMonitor(NodeBase):
     ip: str
@@ -276,25 +283,11 @@ MIT
 
 ---
 
-## Examples
+## Novidades
 
-Os exemplos estão em `examples/` e demonstram tanto o estilo baseado em classe (com decoradores) quanto o estilo procedural.
-
-- `examples/sample_class_dec.py` — Exemplo OO com `@Input`, `@Output`, `@Run`, `@MainOut`, `@Out`.
-- `examples/sample_class.py` — Exemplo OO simples.
-- `examples/sample_imp.py` — Exemplo procedural com funções.
-
-Instalação das dependências dos exemplos:
-
-```bash
-pip install -r examples/requirements.txt
-```
-
-## O que temos agora (novidades)
-
-- Geração de schema para funções e classes.
+- Corrigida a Geração de esquema para funções e classes.
 - Inferência estática de campos retornados por dicionários (mostra `fields` em `stdout` e saídas customizadas quando detectado).
 - Suporte total para decoradores `@Input` aplicado em classes e métodos `@Out`/`@MainOut`.
 - CLI: `--schema`, `--help`, `--input`, `--input-file`.
 
-Versão atual do pacote: `0.1.2`.
+Versão atual do pacote: `0.1.3`.
