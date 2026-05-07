@@ -122,6 +122,24 @@ def type_to_str(tp: Any) -> str:
         return "unknown"
 
 
+def _is_optional(tp: Any) -> bool:
+    """Retorna True se o tipo for Union[..., None] ou Optional[...]."""
+    try:
+        origin = get_origin(tp)
+        if origin is Union:
+            return type(None) in get_args(tp)
+        # Para Python 3.10+ (UnionType)
+        try:
+            import types
+            if isinstance(tp, types.UnionType):
+                return type(None) in get_args(tp)
+        except (ImportError, AttributeError):
+            pass
+    except Exception:
+        pass
+    return False
+
+
 
 # ---------- registries / small classes ----------
 
@@ -366,6 +384,9 @@ def NodeDecorator(arg=None):
 
                         setattr(self, name, None)
 
+                    elif _is_optional(typ):
+                        setattr(self, name, None)
+
                     elif (name in inputs_meta and inputs_meta[name].get("required")) or (name not in defaults):
 
                         raise ValueError(f"Missing required input: {name}")
@@ -479,6 +500,8 @@ class NodeBase:
             elif name in defaults:
 
                 setattr(self, name, defaults[name])
+            elif _is_optional(type_):
+                setattr(self, name, None)
             else:
 
                 raise ValueError(f"Missing required input: {name}")
@@ -773,6 +796,18 @@ class SparkitRuntime:
         if cli_inputs:
             return cli_inputs
 
+        if sys.stdin.isatty():
+            return {}
+
+        raw = sys.stdin.read().strip()
+        if not raw:
+            return {}
+
+        try:
+            return json.loads(raw)
+        except Exception as e:
+            raise ValueError(f"Invalid JSON from stdin: {e}")
+
     def _infer_fields_from_callable(self, fn: callable) -> List[Dict[str, Any]]:
         """
         Best-effort static analysis of a function/method to find Return statements
@@ -854,27 +889,6 @@ class SparkitRuntime:
                 fd["nullable"] = True
             out.append(fd)
         return out
-
-
-        if sys.stdin.isatty():
-
-            return {}
-
-
-        raw = sys.stdin.read().strip()
-
-        if not raw:
-
-            return {}
-
-
-        try:
-
-            return json.loads(raw)
-
-        except Exception as e:
-
-            raise ValueError(f"Invalid JSON from stdin: {e}")
 
 
     # ------------------------------------------------------------------
@@ -994,7 +1008,7 @@ class SparkitRuntime:
 
             input_def = config["inputs"].get(name, {})
 
-            required = param.default is inspect._empty
+            required = param.default is inspect._empty and not _is_optional(param.annotation)
 
             if name in config["inputs"]:
 
@@ -1058,7 +1072,7 @@ class SparkitRuntime:
         for name, typ in hints.items():
             if name in ("outputs", "outputs_def"):
                 continue
-            required = name not in class_defaults
+            required = name not in class_defaults and not _is_optional(typ)
             inputs_map[name] = {"name": name, "type": type_to_str(typ), "required": required}
 
         # merge meta inputs (decorator-based), overriding when present
@@ -1164,7 +1178,7 @@ class SparkitRuntime:
             self.outputs.add(name, definition.get("type", Any), definition.get("description"))
 
 
-        inputs_data = self._read_inputs()
+        inputs_data = self._read_inputs() or {}
 
         args = {}
 
@@ -1181,10 +1195,17 @@ class SparkitRuntime:
             elif param.default is not inspect._empty:
 
                 args[name] = param.default
+            
+            elif _is_optional(param.annotation):
+                args[name] = None
 
             elif config["inputs"].get(name, {}).get("required", False):
 
                 raise ValueError(f"Missing required input: {name}")
+            
+            elif name not in config["inputs"] and param.default is inspect._empty:
+                # If not explicitly in config, it's required if it has no default in sig
+                 raise ValueError(f"Missing required input: {name}")
 
         for k, v in config["inputs"].items():
 
@@ -1273,7 +1294,7 @@ class SparkitRuntime:
         self.__class__._oo_registered = True
 
 
-        inputs = self._read_inputs()
+        inputs = self._read_inputs() or {}
 
         instance = clazz(**inputs)
 
@@ -1363,6 +1384,8 @@ class SparkitRuntime:
 
                 cli_inputs = self._read_inputs()
 
+            if cli_inputs is None:
+                cli_inputs = {}
 
             self._cli_override_inputs = cli_inputs
 
