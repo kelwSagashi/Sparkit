@@ -127,5 +127,73 @@ if __name__ == "__main__":
         self.assertEqual(result["stderr"]["type"], "ValueError")
         self.assertIn("Missing required input: a", result["stderr"]["message"])
 
+    def test_readme_generation(self):
+        """Valida que a flag --readme gera um README.md válido."""
+        content = """
+from Sparkit import Node, Run, sparkit
+@Node
+class TestReadmeNode:
+    param1: int
+    @Run
+    def run(self):
+        pass
+if __name__ == "__main__":
+    sparkit.run(TestReadmeNode)
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            readme_path = os.path.join(tmpdir, "TEST_README.md")
+            result = self.run_sparkit_script(content, ["--readme", "-o", readme_path])
+            
+            self.assertTrue(os.path.isfile(readme_path), "README file was not created")
+            with open(readme_path, "r", encoding="utf-8") as f:
+                readme_content = f.read()
+            
+            self.assertIn("# 🚀 TestReadmeNode", readme_content)
+            self.assertIn("--param1", readme_content)
+            self.assertIn("Como Executar", readme_content)
+
+    def test_zip_generation(self):
+        """Valida que a flag --zip gera um zip com os arquivos corretos."""
+        import zipfile
+        content = """
+from Sparkit import Node, Run, sparkit
+@Node
+class TestZipNode:
+    param1: int
+    @Run
+    def run(self):
+        pass
+if __name__ == "__main__":
+    sparkit.run(TestZipNode)
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "test.zip")
+            
+            script_path = os.path.join(tmpdir, "my_script.py")
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                
+            env = os.environ.copy()
+            env["PYTHONPATH"] = SPARKIT_PATH
+            
+            process = subprocess.Popen(
+                [sys.executable, script_path, "--zip", "-o", zip_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                text=True
+            )
+            stdout, stderr = process.communicate()
+            
+            self.assertTrue(os.path.isfile(zip_path), f"Zip file was not created. Stderr: {stderr}")
+            
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = zf.namelist()
+                
+            self.assertIn("requirements.txt", names)
+            self.assertIn("README.md", names)
+            self.assertIn("my_script.py", names)
+
 if __name__ == "__main__":
     unittest.main()

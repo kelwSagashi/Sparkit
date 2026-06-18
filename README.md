@@ -285,9 +285,12 @@ MIT
 
 ## Novidades
 
+- Geração de documentação automatizada via CLI: `--readme` (com `-o` opcional).
+- Empacotamento inteligente de aplicações via CLI: `--zip` (com `-o` opcional), que empacota o script principal, dependências locais, `README.md` e `requirements.txt`.
+- Análise de importações baseada em AST para descoberta automática de arquivos/módulos de dependências locais.
 - Corrigida a Geração de esquema para funções e classes.
 - Inferência estática de campos retornados por dicionários (mostra `fields` em `stdout` e saídas customizadas quando detectado).
 - Suporte total para decoradores `@Input` aplicado em classes e métodos `@Out`/`@MainOut`.
 - CLI: `--schema`, `--help`, `--input`, `--input-file`.
 
-Versão atual do pacote: `0.1.3`.
+Versão atual do pacote: `0.1.5`.

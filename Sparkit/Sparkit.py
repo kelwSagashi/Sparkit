@@ -17,7 +17,7 @@ Funcionalidades:
 """
 from __future__ import annotations
 
-import sys, json, inspect, traceback, io
+import sys, json, inspect, traceback, io, os, zipfile
 
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -577,6 +577,419 @@ class SparkitRuntime:
             raise ValueError(f"Failed to convert '{value}' to {type_str}")
 
 
+    def _get_imports_from_file(self, file_path: str) -> set[str]:
+        import ast
+        imports = set()
+        if not os.path.exists(file_path):
+            return imports
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for name in node.names:
+                        imports.add(name.name.split('.')[0])
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        imports.add(node.module.split('.')[0])
+        except Exception:
+            pass
+        return imports
+
+    def _find_local_dependencies(self, start_script: str) -> set[str]:
+        dependencies = set()
+        visited = set()
+        to_visit = [os.path.abspath(start_script)]
+        
+        script_dir = os.path.dirname(os.path.abspath(start_script))
+        project_root = script_dir
+        curr = script_dir
+        for _ in range(4):
+            if os.path.exists(os.path.join(curr, ".git")):
+                project_root = curr
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+            
+        while to_visit:
+            curr_file = to_visit.pop(0)
+            if curr_file in visited:
+                continue
+            visited.add(curr_file)
+            
+            imports = self._get_imports_from_file(curr_file)
+            
+            for imp in imports:
+                resolved_path = None
+                
+                curr_dir = os.path.dirname(curr_file)
+                path_py = os.path.join(curr_dir, f"{imp}.py")
+                path_dir = os.path.join(curr_dir, imp)
+                
+                if os.path.isfile(path_py):
+                    resolved_path = path_py
+                elif os.path.isdir(path_dir) and os.path.isfile(os.path.join(path_dir, "__init__.py")):
+                    resolved_path = path_dir
+                    
+                if not resolved_path:
+                    check_root_py = os.path.join(project_root, f"{imp}.py")
+                    check_root_dir = os.path.join(project_root, imp)
+                    
+                    if os.path.isfile(check_root_py):
+                        resolved_path = check_root_py
+                    elif os.path.isdir(check_root_dir):
+                        resolved_path = check_root_dir
+                    else:
+                        for entry in os.listdir(project_root):
+                            entry_path = os.path.join(project_root, entry)
+                            if os.path.isdir(entry_path) and entry not in {".git", ".venv", "venv", "__pycache__"}:
+                                sub_py = os.path.join(entry_path, f"{imp}.py")
+                                sub_dir = os.path.join(entry_path, imp)
+                                if os.path.isfile(sub_py):
+                                    resolved_path = sub_py
+                                    break
+                                elif os.path.isdir(sub_dir):
+                                    resolved_path = sub_dir
+                                    break
+                
+                if resolved_path:
+                    resolved_path = os.path.abspath(resolved_path)
+                    if resolved_path not in dependencies:
+                        dependencies.add(resolved_path)
+                        if os.path.isfile(resolved_path) and resolved_path.endswith(".py"):
+                            to_visit.append(resolved_path)
+                        elif os.path.isdir(resolved_path):
+                            for root, _, files in os.walk(resolved_path):
+                                for file in files:
+                                    if file.endswith(".py"):
+                                        to_visit.append(os.path.join(root, file))
+                                        
+        return dependencies
+
+    def _find_external_imports(self, file_path: str, local_deps: set[str]) -> set[str]:
+        all_imports = set()
+        all_imports.update(self._get_imports_from_file(file_path))
+        for dep in local_deps:
+            if os.path.isfile(dep) and dep.endswith(".py"):
+                all_imports.update(self._get_imports_from_file(dep))
+                
+        std_libs = {
+            "sys", "os", "json", "inspect", "traceback", "io", "datetime", "time", "math", 
+            "re", "random", "collections", "itertools", "functools", "urllib", "hashlib",
+            "hmac", "uuid", "socket", "select", "threading", "multiprocessing", "subprocess",
+            "shutil", "glob", "tempfile", "argparse", "logging", "asyncio", "xml", "csv", 
+            "configparser", "platform", "pickle", "copy", "struct", "ctypes", "zipfile", "tarfile",
+            "builtins", "types"
+        }
+        
+        external_imports = set()
+        script_dir = os.path.dirname(os.path.abspath(file_path))
+        
+        for imp in all_imports:
+            if not imp:
+                continue
+            imp_lower = imp.lower()
+            if imp_lower in std_libs:
+                continue
+            if imp_lower == "sparkit":
+                external_imports.add("sparkit")
+                continue
+                
+            is_local = False
+            path_py = os.path.join(script_dir, f"{imp}.py")
+            path_dir = os.path.join(script_dir, imp)
+            if os.path.isfile(path_py) or os.path.isdir(path_dir):
+                is_local = True
+            else:
+                for dep in local_deps:
+                    dep_name = os.path.basename(dep)
+                    if dep_name == imp or dep_name == f"{imp}.py":
+                        is_local = True
+                        break
+            if is_local:
+                continue
+                
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec(imp)
+                if spec and spec.origin and ("site-packages" not in spec.origin and "dist-packages" not in spec.origin):
+                    continue
+            except Exception:
+                pass
+                
+            if imp == "serial":
+                external_imports.add("pyserial")
+            else:
+                external_imports.add(imp)
+                
+        return external_imports
+
+    def _generate_readme(self, target: Any, schema: dict, readme_path: str):
+        import inspect
+        
+        readme_dir = os.path.dirname(os.path.abspath(readme_path))
+        if readme_dir:
+            os.makedirs(readme_dir, exist_ok=True)
+            
+        script_name = os.path.basename(sys.argv[0])
+        
+        target_name = getattr(target, "__name__", "Script")
+        target_doc = getattr(target, "__doc__", "")
+        if target_doc:
+            target_doc = inspect.cleandoc(target_doc)
+        else:
+            target_doc = f"Script de automação executado com Sparkit utilizando `{target_name}`."
+            
+        md = []
+        md.append(f"# 🚀 {target_name}")
+        md.append("")
+        md.append(target_doc)
+        md.append("")
+        
+        md.append("## 🖥️ Como Executar")
+        md.append("")
+        md.append("Este script foi construído usando a biblioteca Sparkit e pode ser executado de diferentes formas:")
+        md.append("")
+        md.append("### 1. Parâmetros via Linha de Comando (Flags)")
+        
+        example_flags = []
+        for inp in schema.get("inputs", []):
+            name = inp["name"]
+            val = "valor"
+            if inp["type"] == "number":
+                val = "123"
+            elif inp["type"] == "boolean":
+                val = "true"
+            elif inp["type"] == "array":
+                val = "'[1, 2, 3]'"
+            elif inp["type"] == "json" or inp["type"] == "object":
+                val = "'{\"chave\": \"valor\"}'"
+            example_flags.append(f"--{name} {val}")
+            
+        flags_str = " " + " ".join(example_flags) if example_flags else ""
+        md.append(f"```bash\npython {script_name}{flags_str}\n```")
+        md.append("")
+        
+        md.append("### 2. JSON inline via CLI")
+        example_json = {}
+        for inp in schema.get("inputs", []):
+            name = inp["name"]
+            if inp["type"] == "number":
+                example_json[name] = 123
+            elif inp["type"] == "boolean":
+                example_json[name] = True
+            elif inp["type"] == "array":
+                example_json[name] = [1, 2, 3]
+            elif inp["type"] == "json" or inp["type"] == "object":
+                example_json[name] = {"chave": "valor"}
+            else:
+                example_json[name] = "valor"
+                
+        json_str = json.dumps(example_json)
+        md.append(f"```bash\npython {script_name} --input '{json_str}'\n```")
+        md.append("")
+        
+        md.append("### 3. Arquivo JSON de Entrada")
+        md.append(f"```bash\npython {script_name} --input-file entradas.json\n```")
+        md.append("")
+        
+        md.append("### 4. Via entrada padrão (stdin / modo pipeline)")
+        md.append(f"```bash\necho '{json_str}' | python {script_name}\n```")
+        md.append("")
+        
+        md.append("## 📥 Parâmetros de Entrada (Inputs)")
+        md.append("")
+        if schema.get("inputs"):
+            md.append("| Parâmetro | Tipo | Obrigatório | Descrição |")
+            md.append("| --- | --- | --- | --- |")
+            for inp in schema["inputs"]:
+                req = "Sim" if inp.get("required") else "Não"
+                desc = inp.get("description") or "-"
+                md.append(f"| `--{inp['name']}` | `{inp['type']}` | {req} | {desc} |")
+        else:
+            md.append("Este script não possui parâmetros de entrada configurados.")
+        md.append("")
+        
+        md.append("## 📤 Dados de Saída (Outputs)")
+        md.append("")
+        if schema.get("outputs"):
+            md.append("| Saída | Tipo | Descrição |")
+            md.append("| --- | --- | --- |")
+            for out in schema["outputs"]:
+                desc = out.get("description") or "-"
+                md.append(f"| `{out['name']}` | `{out['type']}` | {desc} |")
+                if "fields" in out:
+                    for field in out["fields"]:
+                        f_desc = field.get("description") or "-"
+                        md.append(f"| &nbsp;&nbsp;&nbsp;&nbsp;`.{field['name']}` | `{field['type']}` | {f_desc} |")
+        else:
+            md.append("Este script não possui dados de saída configurados.")
+        md.append("")
+        
+        md.append("### 📄 Exemplo de Formato de Saída")
+        md.append("")
+        md.append("O retorno do script segue a seguinte estrutura:")
+        md.append("")
+        
+        mock_out = {}
+        for out in schema.get("outputs", []):
+            name = out["name"]
+            if name == "stderr":
+                mock_out[name] = None
+                continue
+            if "fields" in out:
+                mock_out[name] = {}
+                for f in out["fields"]:
+                    fname = f["name"]
+                    ftype = f["type"]
+                    if ftype == "number":
+                        mock_out[name][fname] = 0
+                    elif ftype == "boolean":
+                        mock_out[name][fname] = True
+                    elif ftype == "array":
+                        mock_out[name][fname] = []
+                    elif ftype == "json" or ftype == "object":
+                        mock_out[name][fname] = {}
+                    else:
+                        mock_out[name][fname] = "valor"
+            else:
+                otype = out["type"]
+                if otype == "number":
+                    mock_out[name] = 0
+                elif otype == "boolean":
+                    mock_out[name] = True
+                elif otype == "array":
+                    mock_out[name] = []
+                elif otype == "json" or otype == "object":
+                    mock_out[name] = {}
+                else:
+                    mock_out[name] = "valor"
+                    
+        md.append("```json")
+        md.append(json.dumps(mock_out, indent=2))
+        md.append("```")
+        md.append("")
+        
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(md))
+            
+        print(f"Readme gerado com sucesso em: {readme_path}")
+
+    def _create_zip(self, zip_path: str, target: Any, schema: dict):
+        script_path = os.path.abspath(sys.argv[0])
+        script_dir = os.path.dirname(script_path)
+        
+        zip_dir = os.path.dirname(os.path.abspath(zip_path))
+        if zip_dir:
+            os.makedirs(zip_dir, exist_ok=True)
+            
+        print(f"Criando arquivo zip em: {zip_path}")
+        
+        readme_in_script_dir = os.path.join(script_dir, "README.md")
+        temp_readme_created = False
+        if not os.path.isfile(readme_in_script_dir):
+            print("README.md não encontrado no diretório do script. Gerando um novo...")
+            self._generate_readme(target, schema, readme_in_script_dir)
+            temp_readme_created = True
+            
+        req_src_path = None
+        curr_dir = script_dir
+        for _ in range(4):
+            check_path = os.path.join(curr_dir, "requirements.txt")
+            if os.path.isfile(check_path):
+                req_src_path = check_path
+                break
+            parent = os.path.dirname(curr_dir)
+            if parent == curr_dir:
+                break
+            curr_dir = parent
+            
+        temp_req_created = False
+        local_deps = self._find_local_dependencies(script_path)
+        
+        if not req_src_path:
+            print("requirements.txt não encontrado. Gerando a partir das importações do script...")
+            req_src_path = os.path.join(script_dir, "requirements.txt")
+            imports = self._find_external_imports(script_path, local_deps)
+            with open(req_src_path, "w", encoding="utf-8") as f:
+                for imp in sorted(imports):
+                    f.write(f"{imp}\n")
+            temp_req_created = True
+            
+        exclude_dirs = {
+            "__pycache__", ".git", ".venv", "venv", ".idea", ".vscode", 
+            ".planning", ".gemini", "node_modules", "dist", "build", "sparkit.egg-info"
+        }
+        
+        added_in_zip = set()
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(req_src_path, "requirements.txt")
+            added_in_zip.add("requirements.txt")
+            print("  Adicionado ao zip: requirements.txt")
+            
+            zipf.write(readme_in_script_dir, "README.md")
+            added_in_zip.add("README.md")
+            print("  Adicionado ao zip: README.md")
+            
+            for root, dirs, files in os.walk(script_dir):
+                dirs[:] = [d for d in dirs if d not in exclude_dirs]
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    abs_file_path = os.path.abspath(file_path)
+                    
+                    if abs_file_path == os.path.abspath(zip_path):
+                        continue
+                        
+                    rel_path = os.path.relpath(file_path, script_dir)
+                    
+                    if rel_path in ("README.md", "requirements.txt"):
+                        continue
+                        
+                    zipf.write(file_path, rel_path)
+                    added_in_zip.add(rel_path)
+                    print(f"  Adicionado ao zip: {rel_path}")
+                    
+            for dep in local_deps:
+                abs_dep = os.path.abspath(dep)
+                if abs_dep.startswith(os.path.abspath(script_dir)):
+                    continue
+                    
+                dep_basename = os.path.basename(dep)
+                
+                if os.path.isfile(dep):
+                    if dep_basename not in added_in_zip:
+                        zipf.write(dep, dep_basename)
+                        added_in_zip.add(dep_basename)
+                        print(f"  Adicionado ao zip (dependência): {dep_basename}")
+                elif os.path.isdir(dep):
+                    dep_parent = os.path.dirname(dep)
+                    for root, dirs, files in os.walk(dep):
+                        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            rel_path = os.path.relpath(file_path, dep_parent)
+                            if rel_path not in added_in_zip:
+                                zipf.write(file_path, rel_path)
+                                added_in_zip.add(rel_path)
+                                print(f"  Adicionado ao zip (dependência): {rel_path}")
+                                
+        if temp_readme_created and os.path.exists(readme_in_script_dir):
+            try:
+                os.remove(readme_in_script_dir)
+            except Exception:
+                pass
+        if temp_req_created and os.path.exists(req_src_path):
+            try:
+                os.remove(req_src_path)
+            except Exception:
+                pass
+                
+        print(f"Zip criado com sucesso em: {zip_path}")
+
+
     def _print_help(self, schema):
 
         print("\nsparkit Script SDK\n")
@@ -600,6 +1013,10 @@ class SparkitRuntime:
         print("  --input-file <file>    Load JSON from file")
 
         print("  --schema               Show schema")
+
+        print("  --readme [-o <file>]   Generate README.md for the script")
+
+        print("  --zip [-o <file>]      Create zip archive of the application")
 
         print("  --help                 Show this help\n")
 
@@ -1375,6 +1792,38 @@ class SparkitRuntime:
             if "--schema" in sys.argv:
 
                 print(json.dumps({"schema": schema}, indent=2))
+                return
+
+            if "--readme" in sys.argv:
+                readme_path = "README.md"
+                if "-o" in sys.argv:
+                    idx = sys.argv.index("-o")
+                    if idx + 1 < len(sys.argv):
+                        readme_path = sys.argv[idx + 1]
+                elif "--output" in sys.argv:
+                    idx = sys.argv.index("--output")
+                    if idx + 1 < len(sys.argv):
+                        readme_path = sys.argv[idx + 1]
+                else:
+                    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+                    readme_path = os.path.join(script_dir, "README.md")
+                self._generate_readme(target, schema, readme_path)
+                return
+
+            if "--zip" in sys.argv:
+                zip_path = "app.zip"
+                if "-o" in sys.argv:
+                    idx = sys.argv.index("-o")
+                    if idx + 1 < len(sys.argv):
+                        zip_path = sys.argv[idx + 1]
+                elif "--output" in sys.argv:
+                    idx = sys.argv.index("--output")
+                    if idx + 1 < len(sys.argv):
+                        zip_path = sys.argv[idx + 1]
+                else:
+                    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+                    zip_path = os.path.join(script_dir, "app.zip")
+                self._create_zip(zip_path, target, schema)
                 return
 
 
