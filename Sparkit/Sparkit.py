@@ -1591,80 +1591,62 @@ class SparkitRuntime:
         self.outputs = OutputRegistry()
 
         for name, definition in config["outputs"].items():
-
             self.outputs.add(name, definition.get("type", Any), definition.get("description"))
 
-
+        sig = inspect.signature(fn)
         inputs_data = self._read_inputs() or {}
-
         args = {}
 
-        sig = inspect.signature(fn)
-
         for name, param in sig.parameters.items():
-
-            if name == "self":
-                continue
             if name in inputs_data:
-
                 args[name] = inputs_data[name]
-
             elif param.default is not inspect._empty:
-
                 args[name] = param.default
-            
             elif _is_optional(param.annotation):
                 args[name] = None
-
             elif config["inputs"].get(name, {}).get("required", False):
-
                 raise ValueError(f"Missing required input: {name}")
-            
             elif name not in config["inputs"] and param.default is inspect._empty:
                 # If not explicitly in config, it's required if it has no default in sig
-                 raise ValueError(f"Missing required input: {name}")
+                raise ValueError(f"Missing required input: {name}")
 
         for k, v in config["inputs"].items():
-
             if k not in sig.parameters and k in inputs_data:
-
                 args[k] = inputs_data[k]
 
-
         captured_stdout = io.StringIO()
-
         captured_stderr = io.StringIO()
-        
 
         try:
-
             with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
-
                 fn(**args)
+        except Exception as e:
+            err_str = captured_stderr.getvalue().strip()
+            err_info = {
+                "type": e.__class__.__name__,
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            if err_str:
+                err_info["runtime_stderr"] = err_str
 
-        finally:
+            error_output = {"stdout": None, "stderr": err_info} | self.outputs.data
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
 
-            out_str = captured_stdout.getvalue()
+        out_str = captured_stdout.getvalue()
+        err_str = captured_stderr.getvalue()
 
-            err_str = captured_stderr.getvalue()
-            
+        # Se o usuÃ¡rio nÃ£o setou main_output manualmente, usamos o que foi printado
+        if self.main_output is None and out_str:
+            self.main_output = out_str.strip()
 
-            # Se o usuário não setou main_output manualmente, usamos o que foi printado
+        final = {
+            "stdout": self.main_output,
+            "stderr": err_str.strip() if err_str else None,
+        } | self.outputs.data
 
-            if self.main_output is None and out_str:
-
-                self.main_output = out_str.strip()
-            
-
-            final = {
-                "stdout": self.main_output, 
-
-                "stderr": err_str.strip() if err_str else None
-
-            } | self.outputs.data
-
-            print(json.dumps(final, indent=2))
-
+        print(json.dumps(final, indent=2))
 
     def _process_output_methods(self, instance: Any):
 
@@ -1705,67 +1687,57 @@ class SparkitRuntime:
     def _run_class(self, clazz):
 
         if getattr(clazz, "__sparkit_is_node__", False) and self._procedural_registered:
-
             raise RuntimeError("Cannot mix OO and procedural modes.")
 
         self.__class__._oo_registered = True
 
-
         inputs = self._read_inputs() or {}
-
         instance = clazz(**inputs)
 
-
         run_method_name = getattr(clazz, "__sparkit_meta__", {}).get('run_method')
-
         run_fn = None
 
         if run_method_name:
-
             run_fn = getattr(instance, run_method_name, None)
-
         elif hasattr(instance, "run"):
-
             run_fn = instance.run
 
         if not run_fn or not callable(run_fn):
-
             raise RuntimeError(f"Class '{clazz.__name__}' has no execution method.")
 
-
         captured_stdout = io.StringIO()
-
         captured_stderr = io.StringIO()
 
-
         try:
-
             with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
                 run_fn()
-
                 self._process_output_methods(instance)
+        except Exception as e:
+            err_str = captured_stderr.getvalue().strip()
+            err_info = {
+                "type": e.__class__.__name__,
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            if err_str:
+                err_info["runtime_stderr"] = err_str
 
-        finally:
+            error_output = {"stdout": None, "stderr": err_info} | instance.outputs.data
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
 
-            out_str = captured_stdout.getvalue()
+        out_str = captured_stdout.getvalue()
+        err_str = captured_stderr.getvalue()
 
-            err_str = captured_stderr.getvalue()
+        if self.main_output is None and out_str:
+            self.main_output = out_str.strip()
 
+        final = {
+            "stdout": self.main_output,
+            "stderr": err_str.strip() if err_str else None,
+        } | instance.outputs.data
 
-            if self.main_output is None and out_str:
-
-                self.main_output = out_str.strip()
-
-
-            final = {
-                "stdout": self.main_output, 
-
-                "stderr": err_str.strip() if err_str else None
-
-            } | instance.outputs.data
-
-            print(json.dumps(final, indent=2))
-
+        print(json.dumps(final, indent=2))
 
     def run(self, target):
 

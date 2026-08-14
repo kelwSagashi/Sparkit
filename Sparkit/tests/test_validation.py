@@ -127,6 +127,28 @@ if __name__ == "__main__":
         self.assertEqual(result["stderr"]["type"], "ValueError")
         self.assertIn("Missing required input: a", result["stderr"]["message"])
 
+    def test_runtime_exception_keeps_single_json_and_captures_stderr(self):
+        """Valida que excecoes em runtime geram uma unica saida JSON e preservam stderr bruto."""
+        content = """
+import sys
+from Sparkit import Node, Run, sparkit
+
+@Node
+class TestNode:
+    @Run
+    def run(self):
+        print("could not open port '/dev/ttyUSB0'", file=sys.stderr)
+        raise Exception("Nao foi possivel conectar.")
+
+if __name__ == "__main__":
+    sparkit.run(TestNode)
+"""
+        result = self.run_sparkit_script(content)
+        self.assertIsNone(result["stdout"])
+        self.assertEqual(result["stderr"]["type"], "Exception")
+        self.assertEqual(result["stderr"]["message"], "Nao foi possivel conectar.")
+        self.assertIn("could not open port '/dev/ttyUSB0'", result["stderr"]["runtime_stderr"])
+
     def test_readme_generation(self):
         """Valida que a flag --readme gera um README.md válido."""
         content = """
