@@ -293,4 +293,4 @@ MIT
 - Suporte total para decoradores `@Input` aplicado em classes e métodos `@Out`/`@MainOut`.
 - CLI: `--schema`, `--help`, `--input`, `--input-file`.
 
-Versão atual do pacote: `0.1.5`.
+Versão atual do pacote: `0.1.6`.
